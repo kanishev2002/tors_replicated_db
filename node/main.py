@@ -8,6 +8,12 @@ from .database import db
 from .models import AppMessage, ActionType
 import random
 
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s - [Main] - %(levelname)s - %(message)s",
+)
+
+logger = logging.getLogger("main")
 
 
 class ValueBody(BaseModel):
@@ -15,8 +21,11 @@ class ValueBody(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    print('Lifespan is starting')
     # Start election timer in an async context on app start
+    logger.info('Starting raft...')
     raft.start_election_timer()
+    print('Lifespan finished')
     yield
 
 app = FastAPI(lifespan=lifespan)
@@ -34,12 +43,12 @@ async def read_item(key: str):
         return db[key]
 
 @app.post('/{key}')
-async def create_item(key: str, value: ValueBody):
-    await raft.send_message(AppMessage(action_type=ActionType.create, key=key, value=value))
+async def create_item(key: str, body: ValueBody):
+    await raft.send_message(AppMessage(action_type=ActionType.create, key=key, value=body.value))
 
 @app.patch('/{key}')
-async def update_item(key: str, value: ValueBody):
-    await raft.send_message(AppMessage(action_type=ActionType.update, key=key, value=value))
+async def update_item(key: str, body: ValueBody):
+    await raft.send_message(AppMessage(action_type=ActionType.update, key=key, value=body.value))
 
 @app.delete('/{key}')
 async def delete_item(key: str):
@@ -60,5 +69,5 @@ async def raft_protocol_message(message: VoteRequest | VoteResponse | LogRequest
             case MessageType.app_message:
                 await raft.send_message(message)
     except Exception as e:
-        logging.error(f'Raft protocol exception: {e}')
+        logger.error(f'Raft protocol exception: {e}')
         raise HTTPException(500, 'Internal server error')
