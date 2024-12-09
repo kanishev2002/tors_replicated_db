@@ -1,0 +1,67 @@
+services:
+  node1:
+    build:
+        context: ./node
+        dockerfile: Dockerfile
+    image: replication_db
+    container_name: node1
+    env_file: .env # Contains NODE_IPS
+    environment:
+      NODE_ID: "1"
+    networks:
+      raftnet:
+        ipv4_address: 10.5.0.11
+    ports:
+      - "8001:8000" 
+
+  node2:
+    build:
+        context: ./node
+        dockerfile: Dockerfile
+    image: replication_db
+    container_name: node2
+    env_file: .env
+    environment:
+      NODE_ID: "2"
+    networks:
+      raftnet:
+        ipv4_address: 10.5.0.12
+    ports:
+      - "8002:8000"  
+
+  node3:
+    build:
+        context: ./node
+        dockerfile: Dockerfile
+    image: replication_db
+    container_name: node3
+    env_file: .env
+    environment:
+      NODE_ID: "3"
+    networks:
+      raftnet:
+        ipv4_address: 10.5.0.13
+    ports:
+      - "8003:8000"  
+
+  node4:
+    build:
+        context: ./node
+        dockerfile: Dockerfile
+    image: replication_db
+    container_name: node4
+    env_file: .env
+    environment:
+      NODE_ID: "4"
+    networks:
+      raftnet:
+        ipv4_address: 10.5.0.14
+    ports:
+      - "8004:8000" 
+
+networks:
+  raftnet:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.5.0.0/16

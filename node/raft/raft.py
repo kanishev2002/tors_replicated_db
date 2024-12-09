@@ -3,16 +3,18 @@ import json
 import httpx
 from typing import Dict, List
 import logging
-from node.raft.models import *
+from .models import *
 import asyncio
 import random
-from node.models import AppMessage, ActionType
-from node.database import db
+from ..models import AppMessage, ActionType
+from ..database import db
 
 class Raft:
     def __init__(self):
-        self.node_id = int(getenv('NODE_ID'))
-        self.other_nodes: Dict[str, str] = json.loads(getenv('NODE_IPS'))
+        self.node_id: str = getenv('NODE_ID')
+        node_ips: Dict[str, str] = json.loads(getenv('NODE_IPS'))
+        node_ips.pop(self.node_id)
+        self.other_nodes = node_ips
 
         self._state_storage_file = f'state_{self.node_id}.json'
         if path.exists(self._state_storage_file):
@@ -43,7 +45,7 @@ class Raft:
         self.heartbeat_interval = 0.05
         self.reset_election_timer = asyncio.Event()
 
-        self.start_election_timer()
+        # self.start_election_timer()
 
     def start_election_timer(self):
         # Cancel existing timer if any
@@ -264,7 +266,7 @@ class Raft:
         
     
     async def _send(self, node_id, message: BaseModel):
-        url = self.other_nodes[node_id]
+        url = f'{self.other_nodes[node_id]}/raft'
         try:
             async with httpx.AsyncClient() as client:
                 await client.post(url, json=message.model_dump())

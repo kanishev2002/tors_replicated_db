@@ -1,16 +1,26 @@
+from contextlib import asynccontextmanager
+import logging
 from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel
-from raft.raft import Raft
-from database import db
-from raft.models import *
-from models import AppMessage, ActionType
+from .raft.raft import Raft
+from .raft.models import *
+from .database import db
+from .models import AppMessage, ActionType
 import random
 
-app = FastAPI()
-raft = Raft()
+
 
 class ValueBody(BaseModel):
     value: str
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Start election timer in an async context on app start
+    raft.start_election_timer()
+    yield
+
+app = FastAPI(lifespan=lifespan)
+raft = Raft()
 
 @app.get('/{key}')
 async def read_item(key: str):
@@ -35,16 +45,20 @@ async def update_item(key: str, value: ValueBody):
 async def delete_item(key: str):
     await raft.send_message(AppMessage(action_type=ActionType.delete, key=key))
 
-@app.post('/raft')
+@app.post('/raft', status_code=200)
 async def raft_protocol_message(message: VoteRequest | VoteResponse | LogRequest | LogResponse | AppMessage):
-    match message.type:
-        case MessageType.vote_request:
-            raft.handle_vote_request(message)
-        case MessageType.vote_response:
-            raft.handle_vote_response(message)
-        case MessageType.replicate_log_request:
-            raft.handle_replicate_log_request(message)
-        case MessageType.replicate_log_response:
-            raft.handle_log_response(message)
-        case MessageType.app_message:
-            raft.send_message(message)
+    try:
+        match message.type:
+            case MessageType.vote_request:
+                await raft.handle_vote_request(message)
+            case MessageType.vote_response:
+                await raft.handle_vote_response(message)
+            case MessageType.replicate_log_request:
+                await raft.handle_replicate_log_request(message)
+            case MessageType.replicate_log_response:
+                await raft.handle_log_response(message)
+            case MessageType.app_message:
+                await raft.send_message(message)
+    except Exception as e:
+        logging.error(f'Raft protocol exception: {e}')
+        raise HTTPException(500, 'Internal server error')

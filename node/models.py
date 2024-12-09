@@ -1,7 +1,7 @@
 from pydantic import BaseModel
 from enum import Enum
 from typing import Optional
-from raft.models import MessageType
+from .raft.models import MessageType
 
 class ActionType(Enum):
     create = 'create'
