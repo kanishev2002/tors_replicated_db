@@ -2,10 +2,10 @@ FROM python:3.13-alpine
 
 WORKDIR /app
 
+COPY requirements.txt ./node/requirements.txt
+
+RUN pip install --no-cache-dir -r node/requirements.txt
+
 COPY . ./node
 
-WORKDIR /app/node
-
-RUN pip install -r requirements.txt
-
-CMD ["fastapi", "run", "main.py"]
+CMD ["uvicorn", "node.main:app", "--host", "0.0.0.0", "--port", "8000"]
