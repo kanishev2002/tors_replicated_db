@@ -1,18 +1,7 @@
-from enum import Enum
 from typing import List
 from pydantic import BaseModel
-
-class NodeRole(Enum):
-    leader = 'leader'
-    candidate = 'candidate'
-    follower = 'follower'
-
-class MessageType(Enum):
-    vote_request = 'VoteRequest'
-    vote_response = 'VoteResponse'
-    replicate_log_request = 'LogRequest'
-    replicate_log_response = 'LogResponse'
-    app_message = 'AppMessage'
+from ..models import AppMessage
+from ..enums import MessageType
 
 class VoteRequest(BaseModel):
     type: MessageType = MessageType.vote_request
@@ -34,9 +23,10 @@ class LogRequest(BaseModel):
     log_length: int
     log_term: int
     leader_commit: int
-    entries: List
+    entries: List[AppMessage]
 
 class LogResponse(BaseModel):
+    type: MessageType = MessageType.replicate_log_request
     follower_id: str 
     term: int
     ack: int

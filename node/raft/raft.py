@@ -8,6 +8,8 @@ import asyncio
 import random
 from ..models import AppMessage, ActionType
 from ..database import db
+from fastapi.encoders import jsonable_encoder
+from ..enums import NodeRole
 
 logger = logging.getLogger("Raft")
 logger.setLevel(logging.DEBUG)
@@ -54,9 +56,12 @@ class Raft:
         # Timers
         self.election_task = None
         self.heartbeat_task = None
-        self.election_timeout_min = 0.15
-        self.election_timeout_max = 0.3
-        self.heartbeat_interval = 0.05
+        # self.election_timeout_min = 0.15
+        # self.election_timeout_max = 0.3
+        # self.heartbeat_interval = 0.05
+        self.election_timeout_min = 1.5
+        self.election_timeout_max = 3
+        self.heartbeat_interval = 0.5
         self.reset_election_timer = asyncio.Event()
 
         # self.start_election_timer()
@@ -93,6 +98,7 @@ class Raft:
                 # If you become leader, election timer might not be needed.
 
     async def _initialize_election(self):
+        logging.debug('Election started')
         self.current_term += 1
         self.current_role = NodeRole.candidate
         self.voted_for = self.node_id
@@ -102,11 +108,16 @@ class Raft:
         if len(self.log) > 0:
             last_term = self.log[-1].term
         
-        await asyncio.gather(*(self._send(node, VoteRequest(type=MessageType.vote_request, 
-                                         candidate_id=self.node_id, 
-                                         candidate_current_term=self.current_term, 
-                                         candidate_log_length=len(self.log), 
-                                         last_term=last_term)) for node in self.other_nodes.values()))
+        logger.debug('Sending election requests')
+        try:
+            await asyncio.gather(*(self._send(node, VoteRequest(type=MessageType.vote_request, 
+                                            candidate_id=self.node_id, 
+                                            candidate_current_term=self.current_term, 
+                                            candidate_log_length=len(self.log), 
+                                            last_term=last_term)) for node in self.other_nodes))
+        except Exception as e:
+            logger.error('Error during polling: %s', e)
+        logger.debug('Polling finished')
         
 
         self.start_election_timer()
@@ -326,11 +337,17 @@ class Raft:
         
     
     async def _send(self, node_id, message: BaseModel):
-        url = f'{self.other_nodes[node_id]}/raft'
         try:
+            url = f'{self.other_nodes[node_id]}/internal/raft'
+            logger.debug('Sending a request to %s', url)
+            message_json = jsonable_encoder(message)
+            logger.debug('Sending json: %s', json.dumps(message_json))
             async with httpx.AsyncClient() as client:
-                await client.post(url, json=message.model_dump())
+                await client.post(url, json=message_json)
+            logger.debug('Request completed')
         except httpx.RequestError as err:
+            logger.error(f'Send HTTP error: {err}')
+        except Exception as err:
             logger.error(f'Send error: {err}')
 
     def _persist_state(self):

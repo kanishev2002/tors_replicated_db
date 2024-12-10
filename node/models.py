@@ -1,13 +1,6 @@
 from pydantic import BaseModel
-from enum import Enum
 from typing import Optional
-from .raft.models import MessageType
-
-class ActionType(Enum):
-    create = 'create'
-    read = 'read'
-    update = 'update'
-    delete = 'delete'
+from .enums import MessageType, ActionType
 
 class AppMessage(BaseModel):
     message_type: MessageType = MessageType.app_message
