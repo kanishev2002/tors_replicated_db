@@ -44,21 +44,6 @@ services:
     ports:
       - "8003:8000"  
 
-  node4:
-    build:
-        context: ./node
-        dockerfile: Dockerfile
-    image: replication_db
-    container_name: node4
-    env_file: .env
-    environment:
-      NODE_ID: "4"
-    networks:
-      raftnet:
-        ipv4_address: 10.5.0.14
-    ports:
-      - "8004:8000" 
-
 networks:
   raftnet:
     driver: bridge
