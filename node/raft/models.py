@@ -26,7 +26,7 @@ class LogRequest(BaseModel):
     entries: List[AppMessage]
 
 class LogResponse(BaseModel):
-    type: MessageType = MessageType.replicate_log_request
+    type: MessageType = MessageType.replicate_log_response
     follower_id: str 
     term: int
     ack: int
