@@ -10,6 +10,8 @@ from ..models import AppMessage, ActionType
 from ..database import db
 from fastapi.encoders import jsonable_encoder
 from ..enums import NodeRole
+from collections import defaultdict
+import time
 
 logger = logging.getLogger("Raft")
 logger.setLevel(logging.DEBUG)
@@ -50,55 +52,66 @@ class Raft:
         self.current_role = NodeRole.follower
         self.current_leader = None
         self.votes_received = set()
-        self.sent_length = dict()
-        self.acked_length = dict()
+        self.sent_length = defaultdict(int)
+        self.acked_length = defaultdict(int)
 
         # Timers
-        self.election_task = None
+        # self.election_task = None
         self.heartbeat_task = None
+        # TODO: return timeouts
         # self.election_timeout_min = 0.15
         # self.election_timeout_max = 0.3
         # self.heartbeat_interval = 0.05
-        self.election_timeout_min = 1.5
-        self.election_timeout_max = 3
+        # self.election_timeout_min = 1.5
+        # self.election_timeout_max = 3
+        self.election_timeout = random.uniform(2, 5)
         self.heartbeat_interval = 0.5
         self.reset_election_timer = asyncio.Event()
 
-        # self.start_election_timer()
+        self.last_heartbeat = time.monotonic()
+        asyncio.create_task(self.election_timer())
+
         logger.info('Raft initialization complete.')
 
-    def start_election_timer(self):
-        # Cancel existing timer if any
-        if self.election_task:
-            self.election_task.cancel()
-        
-        logger.info('Starting election timer')
-        self.election_task = asyncio.create_task(self._run_election_timer())
-
-    async def _run_election_timer(self):
+    async def election_timer(self):
         while True:
-            # Wait a random timeout
-            timeout = random.uniform(self.election_timeout_min, self.election_timeout_max)
+            if self.current_role == NodeRole.follower \
+                  and time.monotonic() - self.last_heartbeat > self.election_timeout:
+                await self._initialize_election()
+            await asyncio.sleep(2)
+
+    # def start_election_timer(self):
+    #     # Cancel existing timer if any
+    #     if self.election_task:
+    #         self.election_task.cancel()
+        
+    #     logger.info('Starting election timer')
+    #     self.election_task = asyncio.create_task(self._run_election_timer())
+
+    # async def _run_election_timer(self):
+    #     while True:
+    #         # Wait a random timeout
+    #         timeout = random.uniform(self.election_timeout_min, self.election_timeout_max)
             
-            try:
-                logger.debug('Awaiting for heartbeat...')
-                # Use wait_for to race between a heartbeat reset event and the timeout
-                await asyncio.wait_for(self.reset_election_timer.wait(), timeout=timeout)
-                # If we get here, it means reset_election_timer was set, so reset it and loop again
-                logger.debug('Heartbeat received')
-                self.reset_election_timer.clear()
-            except asyncio.TimeoutError:
-                # Timeout happened; no heartbeat received in the given timeframe
-                # This means we should start an election if we're follower/candidate
-                logger.debug('Heartbeat timeout. Starting election...')
-                if self.current_role in [NodeRole.follower, NodeRole.candidate]:
-                    await self._initialize_election()
-                # Break or loop again depending on your logic
-                # If you remain a candidate and fail election, you might continue looping
-                # If you become leader, election timer might not be needed.
+    #         try:
+    #             logger.debug('Awaiting for heartbeat...')
+    #             # Use wait_for to race between a heartbeat reset event and the timeout
+    #             await asyncio.wait_for(self.reset_election_timer.wait(), timeout=timeout)
+    #             # If we get here, it means reset_election_timer was set, so reset it and loop again
+    #             logger.debug('Heartbeat received')
+    #             self.reset_election_timer.clear()
+    #         except asyncio.TimeoutError:
+    #             # Timeout happened; no heartbeat received in the given timeframe
+    #             # This means we should start an election if we're follower/candidate
+    #             logger.debug('Heartbeat timeout. Starting election...')
+    #             if self.current_role in [NodeRole.follower, NodeRole.candidate]:
+    #                 await self._initialize_election()
+    #             # Break or loop again depending on your logic
+    #             # If you remain a candidate and fail election, you might continue looping
+    #             # If you become leader, election timer might not be needed.
 
     async def _initialize_election(self):
-        logging.debug('Election started')
+        logging.info('Election started')
         self.current_term += 1
         self.current_role = NodeRole.candidate
         self.voted_for = self.node_id
@@ -109,18 +122,23 @@ class Raft:
             last_term = self.log[-1].term
         
         logger.debug('Sending election requests')
+        # self.start_election_timer()
         try:
-            await asyncio.gather(*(self._send(node, VoteRequest(type=MessageType.vote_request, 
+            responses: List[httpx.Response] = await asyncio.gather(*(self._send(node, VoteRequest(type=MessageType.vote_request, 
                                             candidate_id=self.node_id, 
                                             candidate_current_term=self.current_term, 
                                             candidate_log_length=len(self.log), 
                                             last_term=last_term)) for node in self.other_nodes))
+            vote_responses = [VoteResponse(**res.json()) for res in responses if res is not None]
+            for response in vote_responses:
+                await self.handle_vote_response(response)
+            # Start election timer??
         except Exception as e:
             logger.error('Error during polling: %s', e)
         logger.debug('Polling finished')
         
 
-        self.start_election_timer()
+        # self.start_election_timer()
 
     def start_heartbeat_timer(self):
         # Cancel any previous heartbeat task
@@ -133,15 +151,18 @@ class Raft:
     async def _run_heartbeat_timer(self):
         while self.current_role == NodeRole.leader:
             # Send heartbeat (empty ReplicateLog) to all followers
-            logger.debug('Sending heartbeat')
-            await self._send_heartbeat()
+            logger.info('Sending heartbeat')
+            await self._send_replicate()
             await asyncio.sleep(self.heartbeat_interval)
-        logger.debug('No longer leader. Stopping heartbeat.')
+        logger.info('No longer leader. Stopping heartbeat.')
 
-    async def _send_heartbeat(self):
-        await asyncio.gather(*(self._replicate_log(node) for node in self.other_nodes.values()))
+    async def _send_replicate(self):
+        responses: List[httpx.Response] = await asyncio.gather(*(self._replicate_log(node) for node in self.other_nodes))
+        log_responses: List[LogResponse] = [LogResponse(**res.json()) for res in responses if res is not None]
+        for response in log_responses:
+            await self.handle_log_response(response)
     
-    async def handle_vote_request(self, request: VoteRequest):
+    async def handle_vote_request(self, request: VoteRequest) -> VoteResponse:
         logger.info('Got vote request.')
         logger.debug('Request: %s', request.model_dump_json())
         myLogTerm = self.log[-1].term if len(self.log) > 0 else 0
@@ -157,22 +178,22 @@ class Raft:
             self.current_term = request.candidate_current_term
             self.current_role = NodeRole.follower
             self.voted_for = request.candidate_id
+            # self.start_election_timer()
+            self.last_heartbeat = time.monotonic()
+            self._persist_state()
             logger.info('Voted for %s on term %s', self.voted_for, self.current_term)
-            await self._send(self.other_nodes[request.candidate_id], 
-                              VoteResponse(type=MessageType.vote_response, 
+            return VoteResponse(type=MessageType.vote_response, 
                                            voter_id=self.node_id, 
                                            term=self.current_term, 
                                            granted=True)
-                            )
+                            
         else:
             logger.info('Vote not granted to %s', request.candidate_id)
-            await self._send(self.other_nodes[request.candidate_id], 
-                              VoteResponse(type=MessageType.vote_response, 
+            return VoteResponse(type=MessageType.vote_response, 
                                            voter_id=self.node_id, 
                                            term=self.current_term, 
                                            granted=False)
-                            )            
-        self._persist_state()
+                        
 
     async def handle_vote_response(self, response: VoteResponse):
         logger.info('Got vote response from %s', response.voter_id)
@@ -185,33 +206,34 @@ class Raft:
                 logger.info('Got a quorum of votes. Becoming a leader.')
                 self.current_role = NodeRole.leader
                 self.current_leader = self.node_id
-                self.election_task.cancel()
-                self.start_heartbeat_timer()
-                for follower in self.other_nodes.keys():
+                # self.election_task.cancel()
+                # responses: List[httpx.Response] = []
+                for follower in self.other_nodes:
                     self.sent_length[follower] = len(self.log)
                     self.acked_length[follower] = 0
-                    await self._replicate_log(follower)
+                self.start_heartbeat_timer()
+                #     responses.append(await self._replicate_log(follower))
+                
         elif response.term > self.current_term:
             logger.info('Got response from a higher term. Becoming a follower.')
             self.current_term = response.term
             self.current_role = NodeRole.follower
             self.voted_for = None
-            self.election_task.cancel()
-            self.start_election_timer()
+            # self.election_task.cancel()
+            # self.start_election_timer()
         
         self._persist_state()
     
     async def send_message(self, message: AppMessage):
         logger.info('Got an app message.')
-        print(f'Message: {message.model_dump_json()}')
-        print(f'Current leader: {self.current_leader}')
-        print(f'Other nodes: {self.other_nodes}')
+        logger.debug(f'Message: {message.model_dump_json()}')
+        logger.debug(f'Current leader: {self.current_leader}')
+        logger.debug(f'Other nodes: {self.other_nodes}')
         if self.current_role == NodeRole.leader:
             logger.info('Added app message to log. Replicating...')
             self.log.append(message)
             self.acked_length[self.node_id] = len(self.log)
-            for follower in self.other_nodes:
-                await self._replicate_log(follower)
+            await self._send_replicate()
         else:
             logger.info('Not the leader. Forwarding the message to %s', self.current_leader)
             await self._send(self.current_leader, message)
@@ -223,27 +245,32 @@ class Raft:
         prev_log_term = 0
         if i > 0:
             prev_log_term = self.log[i-1].term
-        await self._send(follower_id, LogRequest(type=MessageType.replicate_log_request,
+        return await self._send(follower_id, LogRequest(
                                           leader_id=self.current_leader, 
                                           term=self.current_term, log_length=i, log_term=prev_log_term, 
                                           leader_commit=self.commit_length, 
                                           entries=entries))
 
-    async def handle_replicate_log_request(self, request: LogRequest):
+    async def handle_replicate_log_request(self, request: LogRequest) -> LogResponse:
         logger.info('Got replicate log request.')
         logger.debug('Request: %s', request.model_dump_json())
+        if request.term >= self.current_term:
+            self.last_heartbeat = time.monotonic()
 
         if request.term > self.current_term:
             logger.info('Got a request with a higher term. Becoming a follower.')
             self.current_term = request.term
+            self.voted_for = None
             self.current_role = NodeRole.follower
             self.current_leader = request.leader_id
-        if request.term == self.current_term and self.current_role == NodeRole.candidate:
+            # self.start_election_timer()
+        if request.term == self.current_term and self.current_role in [NodeRole.candidate, NodeRole.follower]:
             logger.info('Got a request with a current term. Becoming a follower.')
             self.current_role = NodeRole.follower
             self.current_leader = request.leader_id
+            # self.start_election_timer()
         
-        self.reset_election_timer.set()
+        # self.reset_election_timer.set()
 
         log_ok = len(self.log) >= request.log_length and (request.log_length == 0 or request.log_term == self.log[request.log_length-1].term)
         logger.debug('Log OK: %s', log_ok)
@@ -251,27 +278,27 @@ class Raft:
         if request.term == self.current_term and log_ok:
             logger.info('Request successful. Appending logs.')
             self._append_entries(request.log_length, request.leader_commit, request.entries)
+            logger.debug('Successfully appended entries.')
             ack = request.log_length + len(request.entries)
-            await self._send(request.leader_id, LogResponse(type=MessageType.replicate_log_response, 
-                                                      follower_id=self.node_id, 
-                                                      term=self.current_term, 
-                                                      ack=ack, 
-                                                      success=True))
+            self._persist_state()
+            return LogResponse(
+                            follower_id=self.node_id, 
+                            term=self.current_term, 
+                            ack=ack, 
+                            success=True)
         else:
             logger.info('Request unsuccessful.')
-            await self._send(request.leader_id, LogResponse(type=MessageType.replicate_log_response, 
-                                                      follower_id=self.node_id, 
-                                                      term=self.current_term, 
-                                                      ack=0, 
-                                                      success=False))
-        
-        self._persist_state()
+            return LogResponse(
+                            follower_id=self.node_id, 
+                            term=self.current_term, 
+                            ack=0, 
+                            success=False)
         
     
-    def _append_entries(self, log_length: int, leader_commit: int, entries: List):
+    def _append_entries(self, log_length: int, leader_commit: int, entries: List[AppMessage]):
         if len(entries) > 0 and len(self.log) > log_length:
             logger.debug('Trimming log.')
-            if self.log[log_length-1].term != entries[0].term:
+            if self.log[log_length].term != entries[0].term:
                 self.log = self.log[:log_length]
         
         if log_length + len(entries) > len(self.log):
@@ -298,12 +325,14 @@ class Raft:
             elif self.sent_length[response.follower_id] > 0:
                 logger.info('Shortening log request for %s.', response.follower_id)
                 self.sent_length[response.follower_id] -= 1
-                await self._replicate_log(response.follower_id)
+                response: httpx.Response = await self._replicate_log(response.follower_id)
+                await self.handle_log_response(LogResponse(**response.json()))
         elif response.term > self.current_term:
             logger.info('Got a response from higher term. Becoming a follower.')
             self.current_term = response.term
             self.current_role = NodeRole.follower
             self.voted_for = None
+            # self.start_election_timer()
         self._persist_state()
 
     def _commit_log_entries(self):
@@ -320,7 +349,7 @@ class Raft:
 
     def _find_ready(self, min_acks: int) -> int:
         l = 0
-        r = len(self.log)
+        r = len(self.log) + 1
         while r - l > 1:
             m = (l+r) // 2
             acks = 0
@@ -343,7 +372,7 @@ class Raft:
             message_json = jsonable_encoder(message)
             logger.debug('Sending json: %s', json.dumps(message_json))
             async with httpx.AsyncClient() as client:
-                await client.post(url, json=message_json)
+                return await client.post(url, json=message_json, timeout=httpx.Timeout(5, connect=1))
             logger.debug('Request completed')
         except httpx.RequestError as err:
             logger.error(f'Send HTTP error: {err}')
